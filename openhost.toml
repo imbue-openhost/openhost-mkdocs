@@ -1,0 +1,40 @@
+[app]
+name = "mkdocs"
+version = "0.1.0"
+description = "MkDocs — Python-based documentation site generator with the popular Material theme bundled. Authors edit Markdown in $OPENHOST_APP_DATA_DIR/site/docs/ and mkdocs.yml on the host filesystem; the container watches with inotify and rebuilds on every change. Built site served on https://mkdocs.<zone>/ via darkhttpd."
+
+[runtime.container]
+# Container port 8080 is darkhttpd serving the BUILT
+# /output/site dir (the output of `mkdocs build`).  An inotify
+# watcher rebuilds on every change to docs/ or mkdocs.yml.
+image = "Dockerfile"
+port = 8080
+
+[routing]
+# Public by default — documentation sites are typically read
+# by anyone.  Flip to public_paths = [] for owner-only.
+public_paths = ["/"]
+health_check = "/"
+
+[resources]
+# MkDocs's build peak is heavier than Hugo's because Python's
+# memory baseline is higher (~50 MiB), plus the Material
+# theme's search index generation can use 100-200 MiB on a
+# sizable doc set.  256 MiB has worked in light testing but
+# we set 384 MiB to give Material's pymdownx-extensions
+# headroom on real-sized doc trees.
+memory_mb = 384
+# Build is CPU-bound but only fires when source changes;
+# idle is near zero.  500m for the rebuild burst.
+cpu_millicores = 500
+
+[data]
+# Persistent: $OPENHOST_APP_DATA_DIR/site/ holds the MkDocs
+# project tree:
+#   mkdocs.yml — site config (theme, nav, plugins)
+#   docs/      — Markdown source files
+#   overrides/ — optional theme partials override dir
+#
+# Operators SSH in and edit these files; the inotify watcher
+# rebuilds on every change.
+app_data = true

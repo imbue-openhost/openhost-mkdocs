@@ -13,7 +13,7 @@
 #   /output/site/  (ephemeral inside container)
 #         │
 #         ▼
-#   darkhttpd 0.0.0.0:8080  →  browser
+#   caddy 0.0.0.0:8080  →  browser
 #
 # Same architecture as openhost-hugo; only the SSG binary
 # differs.  See that package's start.sh for the long-form
@@ -38,9 +38,11 @@ if [[ -z "$(ls -A "$SOURCE_DIR" 2>/dev/null)" ]]; then
     cat > "$SOURCE_DIR/mkdocs.yml" <<'YAML'
 site_name: openhost-mkdocs
 site_description: Placeholder site from openhost-mkdocs
-# Relative site_url so this works on any zone domain without
-# the operator having to edit this file before deploying.
-site_url: /
+# We don't set site_url because MkDocs requires it to be a
+# full URL (http://... / https://...) and we don't know the
+# zone domain at scaffold time.  MkDocs falls back to
+# relative URLs everywhere, which works on whatever public
+# URL the OpenHost router serves us on.
 theme:
   name: material
   features:
@@ -126,25 +128,59 @@ if ! /opt/openhost-mkdocs/rebuild.sh; then
 fi
 
 # -----------------------------------------------------------------
-# Launch darkhttpd
+# Launch caddy
 # -----------------------------------------------------------------
-echo "[start.sh] Starting darkhttpd on 0.0.0.0:8080 -> $OUTPUT_DIR"
-# NOTE: no --chroot here (unlike openhost-darkhttpd).  rebuild.sh
-# atomically swaps $OUTPUT_DIR via rename(2); darkhttpd needs to
-# re-resolve the path on every request to see the new dir, which
-# chroot() prevents.  See openhost-hugo/start.sh for the long
-# rationale.
+# -----------------------------------------------------------------
+# Caddy static-file server
+# -----------------------------------------------------------------
 #
-# Debian uses 'nogroup' as the group for the nobody user; alpine
-# uses 'nobody'.  We're debian-based here, so 'nogroup'.
-darkhttpd "$OUTPUT_DIR" \
-    --port 8080 \
-    --addr 0.0.0.0 \
-    --no-listing \
-    --uid nobody \
-    --gid nogroup \
-    --log /dev/stderr &
-DARKHTTPD_PID=$!
+# Why caddy: Debian Trixie does not ship a darkhttpd package,
+# and the Alpine darkhttpd binary is musl-linked so it fails
+# on a glibc base.  Caddy IS in Debian's apt repo and the
+# config for static-file serving is one block.
+#
+# Caddy re-resolves the document root on every request (no
+# chroot equivalent), so rebuild.sh's atomic-swap pattern
+# works cleanly.
+
+CADDYFILE="/tmp/Caddyfile"
+cat > "$CADDYFILE" <<EOF
+{
+    # Disable Caddy's admin endpoint (default on 127.0.0.1:2019).
+    # Nothing in this container talks to it, and dropping it
+    # removes a tiny piece of attack surface.
+    admin off
+    # Suppress automatic HTTPS provisioning — TLS is terminated
+    # by the OpenHost outer Caddy, not by us.
+    auto_https off
+    # Log access lines to stderr so 'oh app logs mkdocs' shows
+    # them.
+    log {
+        output stderr
+        format console
+        level INFO
+    }
+    persist_config off
+}
+
+:8080 {
+    root * $OUTPUT_DIR
+    file_server {
+        # Don't show directory listings (matches darkhttpd's
+        # --no-listing).  Missing-index paths return 404.
+        hide .git
+    }
+    # Pretty 404 for missing paths.  Could point at a custom
+    # 404.html in the future.
+    handle_errors {
+        respond "{http.error.status_code} {http.error.status_text}"
+    }
+}
+EOF
+
+echo "[start.sh] Starting caddy on 0.0.0.0:8080 -> $OUTPUT_DIR"
+caddy run --config "$CADDYFILE" --adapter caddyfile &
+WEB_PID=$!
 
 # -----------------------------------------------------------------
 # Launch the inotify watcher
@@ -175,18 +211,18 @@ WATCHER_PID=$!
 # Supervision
 # -----------------------------------------------------------------
 #
-# Same model as openhost-hugo: darkhttpd is the only fatal
-# child.  Watcher crashes restart in-place.
-trap 'kill -TERM "$DARKHTTPD_PID" "$WATCHER_PID" 2>/dev/null; wait' TERM INT
+# Same model as openhost-hugo: the web server is the only
+# fatal child.  Watcher crashes restart in-place.
+trap 'kill -TERM "$WEB_PID" "$WATCHER_PID" 2>/dev/null; wait' TERM INT
 
 while true; do
     set +e
-    wait -n "$DARKHTTPD_PID" "$WATCHER_PID"
+    wait -n "$WEB_PID" "$WATCHER_PID"
     EXIT_CODE=$?
     set -e
 
-    if ! kill -0 "$DARKHTTPD_PID" 2>/dev/null; then
-        echo "[start.sh] darkhttpd exited (code=$EXIT_CODE); container will shut down"
+    if ! kill -0 "$WEB_PID" 2>/dev/null; then
+        echo "[start.sh] caddy exited (code=$EXIT_CODE); container will shut down"
         break
     fi
 
@@ -216,6 +252,6 @@ while true; do
     fi
 done
 
-kill -TERM "$DARKHTTPD_PID" "$WATCHER_PID" 2>/dev/null || true
+kill -TERM "$WEB_PID" "$WATCHER_PID" 2>/dev/null || true
 wait || true
 exit "$EXIT_CODE"

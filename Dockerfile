@@ -9,16 +9,20 @@
 # Source dir:  $OPENHOST_APP_DATA_DIR/site/        (persistent)
 # Output dir:  /output/site/                       (ephemeral)
 
-# Stage 1: lift the darkhttpd binary from Alpine.
-# Debian Trixie does NOT have a `darkhttpd` apt package, so
-# we take the statically-linkable Alpine build and copy just
-# the /usr/bin/darkhttpd binary into the runtime image.
-# darkhttpd is a ~50 KiB static binary with no runtime deps
-# (libc only); it ports cleanly between Alpine and Debian.
-FROM docker.io/library/alpine:3.20 AS darkhttpd-source
-RUN apk add --no-cache darkhttpd
-
-# Stage 2: runtime image.
+# Runtime image.
+#
+# Originally I tried to lift the darkhttpd binary out of an
+# alpine stage, but darkhttpd in alpine is musl-linked and
+# fails on a glibc base ("cannot execute: required file not
+# found").  Debian Trixie doesn't ship a darkhttpd package
+# either.  Switched to Caddy, which IS in Debian's apt repo
+# and has a one-line config for static-file serving:
+#
+#   :8080 { root * /output/site; file_server }
+#
+# Same end behaviour (HTTP file server, drop privs, serves
+# the rebuilt MkDocs output) and Caddy handles the chroot-
+# free / file-replace pattern cleanly out of the box.
 FROM docker.io/library/python:3.13-slim
 
 # Install:
@@ -47,6 +51,7 @@ FROM docker.io/library/python:3.13-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         bash \
+        caddy \
         inotify-tools \
         git \
         tini \
@@ -57,11 +62,6 @@ RUN apt-get update \
         'mkdocs>=1.6,<2' \
         'mkdocs-material>=9.6,<10' \
         'mkdocs-minify-plugin>=0.8,<1'
-
-# Copy the darkhttpd binary from the alpine stage.  Drop it at
-# /usr/local/bin/ so it precedes any future debian-supplied
-# darkhttpd on PATH.
-COPY --from=darkhttpd-source /usr/bin/darkhttpd /usr/local/bin/darkhttpd
 
 # Copy entrypoint + rebuild helper (mode 0755 in git).
 COPY start.sh /opt/openhost-mkdocs/start.sh

@@ -11,7 +11,8 @@ site generator — packaged for OpenHost with a live-rebuild loop.
 - Markdown source in `$OPENHOST_APP_DATA_DIR/site/docs/` on the host.
 - `mkdocs.yml` config in `$OPENHOST_APP_DATA_DIR/site/mkdocs.yml`.
 - An `inotify` watcher rebuilds within seconds of any source change.
-- Built output served by darkhttpd.
+- Built output served by Caddy (Debian Trixie doesn't ship
+  `darkhttpd`; Caddy is the closest one-config equivalent).
 
 ## Authoring
 
@@ -86,7 +87,7 @@ rebuild.sh
 /output/site/   (ephemeral)
    │
    ▼
-darkhttpd 0.0.0.0:8080
+caddy file_server 0.0.0.0:8080
    │
    ▼
 OpenHost router (public_paths = ["/"])

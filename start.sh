@@ -160,7 +160,6 @@ cat > "$CADDYFILE" <<EOF
         format console
         level INFO
     }
-    persist_config off
 }
 
 :8080 {

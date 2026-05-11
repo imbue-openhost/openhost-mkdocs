@@ -151,7 +151,7 @@ echo "[start.sh] Starting inotify watcher on $SOURCE_DIR"
 (
     echo "[watcher] watching $SOURCE_DIR for changes"
     inotifywait -m -r -q \
-        -e modify -e create -e delete -e move_to -e move_from \
+        -e modify -e create -e delete -e moved_to -e moved_from \
         --format '%T %w%f %e' --timefmt '%Y-%m-%dT%H:%M:%S' \
         "$SOURCE_DIR" | while read -r event; do
         # Drain the event burst with a 1s debounce window.
@@ -172,17 +172,48 @@ WATCHER_PID=$!
 # -----------------------------------------------------------------
 # Supervision
 # -----------------------------------------------------------------
+#
+# Same model as openhost-hugo: darkhttpd is the only fatal
+# child.  Watcher crashes restart in-place.
 trap 'kill -TERM "$DARKHTTPD_PID" "$WATCHER_PID" 2>/dev/null; wait' TERM INT
 
-set +e
-wait -n "$DARKHTTPD_PID" "$WATCHER_PID"
-EXIT_CODE=$?
-set -e
+while true; do
+    set +e
+    wait -n "$DARKHTTPD_PID" "$WATCHER_PID"
+    EXIT_CODE=$?
+    set -e
 
-if ! kill -0 "$WATCHER_PID" 2>/dev/null; then
-    echo "[start.sh] watcher died; site will no longer rebuild on changes" >&2
-fi
-echo "[start.sh] Child exited (code=$EXIT_CODE); shutting down"
+    if ! kill -0 "$DARKHTTPD_PID" 2>/dev/null; then
+        echo "[start.sh] darkhttpd exited (code=$EXIT_CODE); container will shut down"
+        break
+    fi
+
+    if ! kill -0 "$WATCHER_PID" 2>/dev/null; then
+        echo "[start.sh] watcher exited (code=$EXIT_CODE); restarting" >&2
+        (
+            echo "[watcher] watching $SOURCE_DIR for changes (restarted)"
+            inotifywait -m -r -q \
+                -e modify -e create -e delete -e moved_to -e moved_from \
+                --format '%T %w%f %e' --timefmt '%Y-%m-%dT%H:%M:%S' \
+                "$SOURCE_DIR" | while read -r event; do
+                last_event="$event"
+                while read -r -t 1 next_event; do
+                    last_event="$next_event"
+                done
+                echo "[watcher] change detected; rebuilding (last event: $last_event)"
+                if /opt/openhost-mkdocs/rebuild.sh; then
+                    echo "[watcher] rebuild OK"
+                else
+                    echo "[watcher] rebuild FAILED; previous output dir kept"
+                fi
+            done
+        ) &
+        WATCHER_PID=$!
+        sleep 2
+        continue
+    fi
+done
+
 kill -TERM "$DARKHTTPD_PID" "$WATCHER_PID" 2>/dev/null || true
 wait || true
 exit "$EXIT_CODE"

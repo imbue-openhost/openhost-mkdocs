@@ -129,20 +129,22 @@ fi
 # Launch darkhttpd
 # -----------------------------------------------------------------
 echo "[start.sh] Starting darkhttpd on 0.0.0.0:8080 -> $OUTPUT_DIR"
+# NOTE: no --chroot here (unlike openhost-darkhttpd).  rebuild.sh
+# atomically swaps $OUTPUT_DIR via rename(2); darkhttpd needs to
+# re-resolve the path on every request to see the new dir, which
+# chroot() prevents.  See openhost-hugo/start.sh for the long
+# rationale.
+#
+# Debian uses 'nogroup' as the group for the nobody user; alpine
+# uses 'nobody'.  We're debian-based here, so 'nogroup'.
 darkhttpd "$OUTPUT_DIR" \
     --port 8080 \
     --addr 0.0.0.0 \
     --no-listing \
-    --chroot \
     --uid nobody \
     --gid nogroup \
     --log /dev/stderr &
 DARKHTTPD_PID=$!
-
-# Debian uses 'nogroup' as the group for the nobody user; alpine uses
-# 'nobody'.  We picked debian above, so 'nogroup' it is.  If the
-# group lookup fails on some other base image, darkhttpd will print
-# a clear error to stderr.
 
 # -----------------------------------------------------------------
 # Launch the inotify watcher

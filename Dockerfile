@@ -9,6 +9,16 @@
 # Source dir:  $OPENHOST_APP_DATA_DIR/site/        (persistent)
 # Output dir:  /output/site/                       (ephemeral)
 
+# Stage 1: lift the darkhttpd binary from Alpine.
+# Debian Trixie does NOT have a `darkhttpd` apt package, so
+# we take the statically-linkable Alpine build and copy just
+# the /usr/bin/darkhttpd binary into the runtime image.
+# darkhttpd is a ~50 KiB static binary with no runtime deps
+# (libc only); it ports cleanly between Alpine and Debian.
+FROM docker.io/library/alpine:3.20 AS darkhttpd-source
+RUN apk add --no-cache darkhttpd
+
+# Stage 2: runtime image.
 FROM docker.io/library/python:3.13-slim
 
 # Install:
@@ -33,12 +43,10 @@ FROM docker.io/library/python:3.13-slim
 #   * mkdocs-material 9.6.x
 #
 # Slim deps via --no-install-recommends to keep the image
-# small; the apt step installs the system tools start.sh + the
-# rebuild scripts need.
+# small.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         bash \
-        darkhttpd \
         inotify-tools \
         git \
         tini \
@@ -49,6 +57,11 @@ RUN apt-get update \
         'mkdocs>=1.6,<2' \
         'mkdocs-material>=9.6,<10' \
         'mkdocs-minify-plugin>=0.8,<1'
+
+# Copy the darkhttpd binary from the alpine stage.  Drop it at
+# /usr/local/bin/ so it precedes any future debian-supplied
+# darkhttpd on PATH.
+COPY --from=darkhttpd-source /usr/bin/darkhttpd /usr/local/bin/darkhttpd
 
 # Copy entrypoint + rebuild helper (mode 0755 in git).
 COPY start.sh /opt/openhost-mkdocs/start.sh
